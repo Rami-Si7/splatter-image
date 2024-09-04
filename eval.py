@@ -37,7 +37,7 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
     Args:
         save_vis: how many examples will have visualisations saved
     """
-    print("check push to repository")
+    print("check  to repository")
     if save_vis > 0:
 
         os.makedirs(out_folder, exist_ok=True)
