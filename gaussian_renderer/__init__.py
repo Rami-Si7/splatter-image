@@ -1,36 +1,30 @@
-# Adapted from https://github.com/graphdeco-inria/gaussian-splatting/tree/main
-# to take in a predicted dictionary with 3D Gaussian parameters.
-
 import math
 import torch
 import numpy as np
-
+import matplotlib.pyplot as plt
+from IPython.display import display
+from PIL import Image
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 from utils.graphics_utils import focal2fov
 
-def render_predicted(pc : dict, 
+def render_predicted(pc: dict, 
                      world_view_transform,
                      full_proj_transform,
                      camera_center,
-                     bg_color : torch.Tensor, 
+                     bg_color: torch.Tensor, 
                      cfg, 
-                     scaling_modifier = 1.0, 
-                     override_color = None,
-                     focals_pixels = None):
+                     scaling_modifier=1.0, 
+                     override_color=None,
+                     focals_pixels=None):
     """
     Render the scene as specified by pc dictionary. 
-    
-    Background tensor (bg_color) must be on GPU!
+    Returns both the rendered image and the depth map.
     """
- 
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    screenspace_points = torch.zeros_like(pc["xyz"], dtype=pc["xyz"].dtype, requires_grad=True, device=pc["xyz"].device) + 0
-    try:
-        screenspace_points.retain_grad()
-    except:
-        pass
 
-    if focals_pixels == None:
+    # Create zero tensor for 2D (screen-space) means
+    screenspace_points = torch.zeros_like(pc["xyz"], dtype=pc["xyz"].dtype, requires_grad=True, device=pc["xyz"].device)
+
+    if focals_pixels is None:
         tanfovx = math.tan(cfg.data.fov * np.pi / 360)
         tanfovy = math.tan(cfg.data.fov * np.pi / 360)
     else:
@@ -55,21 +49,15 @@ def render_predicted(pc : dict,
 
     rasterizer = GaussianRasterizer(raster_settings=raster_settings)
 
-    means3D = pc["xyz"]
+    means3D = pc["xyz"]  # The 3D positions of the Gaussians
     means2D = screenspace_points
     opacity = pc["opacity"]
 
-    # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
-    # scaling / rotation by the rasterizer.
-    scales = None
-    rotations = None
-    cov3D_precomp = None
-
+    # If precomputed 3D covariance is provided, use it.
     scales = pc["scaling"]
     rotations = pc["rotation"]
 
-    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
-    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
+    # Handling SHs or Precomputed Colors
     shs = None
     colors_precomp = None
     if override_color is None:
@@ -80,20 +68,42 @@ def render_predicted(pc : dict,
     else:
         colors_precomp = override_color
 
+    # Ensure either SHs or colors_precomp is provided
+    if shs is None and colors_precomp is None:
+        raise Exception('Please provide either SHs or precomputed colors!')
+
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     rendered_image, radii = rasterizer(
-        means3D = means3D,
-        means2D = means2D,
-        shs = shs,
-        colors_precomp = colors_precomp,
-        opacities = opacity,
-        scales = scales,
-        rotations = rotations,
-        cov3D_precomp = cov3D_precomp)
+        means3D=means3D,
+        means2D=means2D,
+        shs=shs,  # Pass SHs if available
+        colors_precomp=colors_precomp,  # Or pass precomputed colors
+        opacities=opacity,
+        scales=scales,
+        rotations=rotations
+    )
 
-    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-    # They will be excluded from value updates used in the splitting criteria.
-    return {"render": rendered_image,
-            "viewspace_points": screenspace_points,
-            "visibility_filter" : radii > 0,
-            "radii": radii}
+    # Depth map generation
+    # Extract the Z-coordinates (depth values)
+    depth_values = means3D[:, 2]
+
+    # Normalize the depth values
+    depth_min = torch.min(depth_values)
+    depth_max = torch.max(depth_values)
+    normalized_depth = (depth_values - depth_min) / (depth_max - depth_min)
+
+    # Reshape the depth values accordingly (depth should be a 2D map, not 3D)
+    image_height, image_width = rendered_image.shape[-2], rendered_image.shape[-1]
+    depth_map = normalized_depth.view(image_height, image_width)
+
+    # Save and display depth map as an image
+    plt.imsave('/content/depth_map.png', depth_map.cpu().numpy(), cmap='gray')
+    display(Image.open('/content/depth_map.png'))
+
+    return {
+        "render": rendered_image,
+        "depth_map": depth_map,
+        "viewspace_points": screenspace_points,
+        "visibility_filter": radii > 0,
+        "radii": radii
+    }

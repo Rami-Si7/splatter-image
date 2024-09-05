@@ -18,6 +18,7 @@ from gaussian_renderer import render_predicted
 from scene.gaussian_predictor import GaussianSplatPredictor
 from datasets.dataset_factory import get_dataset
 from utils.loss_utils import ssim as ssim_fn
+from utils.vis_utils import vis_image_preds
 
 class Metricator():
     def __init__(self, device):
@@ -112,7 +113,7 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
                                      focals_pixels=focals_pixels_render)["render"]
 
             if d_idx < save_vis:
-                # vis_image_preds(reconstruction, out_example)
+                vis_image_preds(reconstruction, out_example)
                 torchvision.utils.save_image(image, os.path.join(out_example, '{0:05d}'.format(r_idx) + ".png"))
                 torchvision.utils.save_image(data["gt_images"][0, r_idx, ...], os.path.join(out_example_gt, '{0:05d}'.format(r_idx) + ".png"))
 
