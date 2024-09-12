@@ -30,7 +30,7 @@ class Metricator():
         return psnr, ssim, lpips
 
 @torch.no_grad()
-def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folder=None
+def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folder=None, si_target_path=None
                      ):
     """
     Runs evaluation on the dataset passed in the dataloader. 
@@ -40,8 +40,10 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
     """
     print("check  to repository")
     if save_vis > 0:
-
         os.makedirs(out_folder, exist_ok=True)
+
+    if si_target_path:
+        os.makedirs(si_target_path, exist_ok=True)
 
     with open("scores.txt", "w+") as f:
         f.write("")
@@ -79,17 +81,20 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
 
         if model_cfg.data.origin_distances:
             input_images = torch.cat([data["gt_images"][:, :model_cfg.data.input_images, ...],
-                                      data["origin_distances"][:, :model_cfg.data.input_images, ...]],
-                                      dim=2)
+                                      data["origin_distances"][:, :model_cfg.data.input_images, ...]], dim=2)
         else:
             input_images = data["gt_images"][:, :model_cfg.data.input_images, ...]
 
         example_id = dataloader.dataset.get_example_id(d_idx)
-        if d_idx < save_vis:
+        print(f'here here is the example_id:{example_id}****')
+        
+        # Create a directory for this sample to save its reconstruction (splatter image)
+        sample_folder = os.path.join(si_target_path, f"{example_id}")
+        os.makedirs(sample_folder, exist_ok=True)
 
+        if d_idx < save_vis:
             out_example_gt = os.path.join(out_folder, "{}_".format(d_idx) + example_id + "_gt")
             out_example = os.path.join(out_folder, "{}_".format(d_idx) + example_id)
-
             os.makedirs(out_example_gt, exist_ok=True)
             os.makedirs(out_example, exist_ok=True)
 
@@ -98,15 +103,20 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
                                data["view_to_world_transforms"][:, :model_cfg.data.input_images, ...],
                                rot_transform_quats,
                                focals_pixels_pred)
+        for key, value in reconstruction.items():
+            print(f"{key}: Shape = {value.shape}")
+        # Save the reconstruction (splatter image) to the sample's folder
+        reconstruction_file = os.path.join(sample_folder, f"reconstruction.pt")
+        torch.save(reconstruction, reconstruction_file)
 
-        for r_idx in range( data["gt_images"].shape[1]):
+        for r_idx in range(data["gt_images"].shape[1]):
             if "focals_pixels" in data.keys():
                 focals_pixels_render = data["focals_pixels"][0, r_idx]
             else:
                 focals_pixels_render = None
             image = render_predicted({k: v[0].contiguous() for k, v in reconstruction.items()},
                                      data["world_view_transforms"][0, r_idx],
-                                     data["full_proj_transforms"][0, r_idx], 
+                                     data["full_proj_transforms"][0, r_idx],
                                      data["camera_centers"][0, r_idx],
                                      background,
                                      model_cfg,
@@ -145,10 +155,10 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
 
     scores = {"PSNR_cond": sum(psnr_all_examples_cond) / len(psnr_all_examples_cond),
               "SSIM_cond": sum(ssim_all_examples_cond) / len(ssim_all_examples_cond),
-              "LPIPS_cond": sum(lpips_all_examples_cond) / len(lpips_all_examples_cond),
+              "LPIPS_cond": sum(lpips_all_renders_cond) / len(lpips_all_renders_cond),
               "PSNR_novel": sum(psnr_all_examples_novel) / len(psnr_all_examples_novel),
               "SSIM_novel": sum(ssim_all_examples_novel) / len(ssim_all_examples_novel),
-              "LPIPS_novel": sum(lpips_all_examples_novel) / len(lpips_all_examples_novel)}
+              "LPIPS_novel": sum(lpips_all_renders_novel) / len(lpips_all_renders_novel)}
 
     return scores
 
@@ -238,7 +248,7 @@ def eval_robustness(model, dataloader, device, model_cfg, out_folder=None):
             torchvision.utils.save_image(data["gt_images"][0, r_idx, ...], os.path.join(out_example_gt, '{0:05d}'.format(r_idx) + ".png"))
 
 @torch.no_grad()
-def main(dataset_name, experiment_path, device_idx, split='test', save_vis=0, out_folder=None):
+def main(dataset_name, experiment_path, device_idx, split='test', save_vis=0, out_folder=None, si_target_path = None):
     
     # set device and random seed
     device = torch.device("cuda:{}".format(device_idx))
@@ -285,7 +295,7 @@ def main(dataset_name, experiment_path, device_idx, split='test', save_vis=0, ou
     dataloader = DataLoader(dataset, batch_size=1, shuffle=False,
                             persistent_workers=True, pin_memory=True, num_workers=1)
     
-    scores = evaluate_dataset(model, dataloader, device, training_cfg, save_vis=save_vis, out_folder=out_folder)
+    scores = evaluate_dataset(model, dataloader, device, training_cfg, save_vis=save_vis, out_folder=out_folder, si_target_path=si_target_path)
     if split != 'vis':
         print(scores)
     return scores
@@ -320,11 +330,12 @@ if __name__ == "__main__":
     if split == 'vis':
         print("Will not print or save scores. Use a different --split to return scores.")
     out_folder = args.out_folder
+    si_target_path = "/content/SI_target"
     save_vis = args.save_vis
     if save_vis == 0:
         print("Not saving any renders (only computing scores). To save renders use flag --save_vis")
 
-    scores = main(dataset_name, experiment_path, 0, split=split, save_vis=save_vis, out_folder=out_folder)
+    scores = main(dataset_name, experiment_path, 0, split=split, save_vis=save_vis, out_folder=out_folder, si_target_path = si_target_path)
     # save scores to json in the experiment folder if appropriate split was used
     if split != "vis":
         if experiment_path is not None:

@@ -11,12 +11,11 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, getView2Wo
 
 from .shared_dataset import SharedDataset
 
-SHAPENET_DATASET_ROOT = "/content/cv" # Change this to your data directory
+SHAPENET_DATASET_ROOT = "/content/cv"  # Change this to your data directory
 assert SHAPENET_DATASET_ROOT is not None, "Update the location of the SRN Shapenet Dataset"
 
 class SRNDataset(SharedDataset):
-    def __init__(self, cfg,
-                 dataset_name="train"):
+    def __init__(self, cfg, dataset_name="train"):
         super().__init__()
         self.cfg = cfg
 
@@ -35,35 +34,23 @@ class SRNDataset(SharedDataset):
             if os.path.exists(tmp):
                 self.base_path = tmp
 
-        self.intrins = sorted(
-            glob.glob(os.path.join(self.base_path, "*", "intrinsics.txt"))
-        )
+        self.intrins = sorted(glob.glob(os.path.join(self.base_path, "*", "intrinsics.txt")))
 
-        print(len(self.intrins))
+        print(f"Number of intrinsic files found: {len(self.intrins)}")
         if cfg.data.subset != -1:
             self.intrins = self.intrins[:cfg.data.subset]
 
         self.projection_matrix = getProjectionMatrix(
             znear=self.cfg.data.znear, zfar=self.cfg.data.zfar,
             fovX=cfg.data.fov * 2 * np.pi / 360, 
-            fovY=cfg.data.fov * 2 * np.pi / 360).transpose(0,1)
+            fovY=cfg.data.fov * 2 * np.pi / 360).transpose(0, 1)
         
         self.imgs_per_obj = self.cfg.opt.imgs_per_obj
-
-        # in deterministic version the number of testing images
-        # and number of training images are the same
-        if self.cfg.data.input_images == 1:
-            self.test_input_idxs = [64]
-        elif self.cfg.data.input_images == 2:
-            self.test_input_idxs = [64, 128]
-        else:
-            raise NotImplementedError
 
     def __len__(self):
         return len(self.intrins)
 
-    def load_example_id(self, example_id, intrin_path,
-                        trans = np.array([0.0, 0.0, 0.0]), scale=1.0):
+    def load_example_id(self, example_id, intrin_path, trans=np.array([0.0, 0.0, 0.0]), scale=1.0):
         dir_path = os.path.dirname(intrin_path)
         rgb_paths = sorted(glob.glob(os.path.join(dir_path, "rgb", "*")))
         pose_paths = sorted(glob.glob(os.path.join(dir_path, "pose", "*")))
@@ -119,18 +106,25 @@ class SRNDataset(SharedDataset):
         example_id = os.path.basename(os.path.dirname(intrin_path))
 
         self.load_example_id(example_id, intrin_path)
+
+        # Dynamically adjust the test_input_idxs based on available frames
+        num_frames = len(self.all_rgbs[example_id])
+
         if self.dataset_name == "train":
-            frame_idxs = torch.randperm(
-                    len(self.all_rgbs[example_id])
-                    )[:self.imgs_per_obj]
-
+            frame_idxs = torch.randperm(num_frames)[:self.imgs_per_obj]
             frame_idxs = torch.cat([frame_idxs[:self.cfg.data.input_images], frame_idxs], dim=0)
-
         else:
+            # Dynamically adjust to avoid index out of bounds
+            if self.cfg.data.input_images == 1:
+                self.test_input_idxs = [min(num_frames - 1, 64)]  # Avoid exceeding the frame count
+            elif self.cfg.data.input_images == 2:
+                self.test_input_idxs = [min(num_frames - 1, 64), min(num_frames - 1, 128)]
+            else:
+                raise NotImplementedError
+
             input_idxs = self.test_input_idxs
-            
             frame_idxs = torch.cat([torch.tensor(input_idxs), 
-                                    torch.tensor([i for i in range(251) if i not in input_idxs])], dim=0) 
+                                    torch.tensor([i for i in range(num_frames) if i not in input_idxs])], dim=0)
 
         images_and_camera_poses = {
             "gt_images": self.all_rgbs[example_id][frame_idxs].clone(),
