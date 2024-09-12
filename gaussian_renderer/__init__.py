@@ -97,8 +97,8 @@ def render_predicted(pc: dict,
     depth_map = normalized_depth.view(image_height, image_width)
 
     # Save and display depth map as an image
-    plt.imsave('/content/depth_map.png', depth_map.cpu().numpy(), cmap='gray')
-    display(Image.open('/content/depth_map.png'))
+    # plt.imsave('/content/depth_map.png', depth_map.cpu().numpy(), cmap='gray')
+    # display(Image.open('/content/depth_map.png'))
 
     return {
         "render": rendered_image,

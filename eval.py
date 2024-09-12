@@ -103,8 +103,8 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
                                data["view_to_world_transforms"][:, :model_cfg.data.input_images, ...],
                                rot_transform_quats,
                                focals_pixels_pred)
-        for key, value in reconstruction.items():
-            print(f"{key}: Shape = {value.shape}")
+        # for key, value in reconstruction.items():
+        #     print(f"{key}: Shape = {value.shape}")
         # Save the reconstruction (splatter image) to the sample's folder
         reconstruction_file = os.path.join(sample_folder, f"reconstruction.pt")
         torch.save(reconstruction, reconstruction_file)
@@ -123,7 +123,7 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
                                      focals_pixels=focals_pixels_render)["render"]
 
             if d_idx < save_vis:
-                vis_image_preds(reconstruction, out_example)
+                # vis_image_preds(reconstruction, out_example)
                 torchvision.utils.save_image(image, os.path.join(out_example, '{0:05d}'.format(r_idx) + ".png"))
                 torchvision.utils.save_image(data["gt_images"][0, r_idx, ...], os.path.join(out_example_gt, '{0:05d}'.format(r_idx) + ".png"))
 
