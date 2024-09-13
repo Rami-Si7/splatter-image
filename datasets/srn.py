@@ -104,7 +104,6 @@ class SRNDataset(SharedDataset):
     def __getitem__(self, index):
         intrin_path = self.intrins[index]
         example_id = os.path.basename(os.path.dirname(intrin_path))
-
         self.load_example_id(example_id, intrin_path)
 
         # Dynamically adjust the test_input_idxs based on available frames
@@ -127,6 +126,7 @@ class SRNDataset(SharedDataset):
                                     torch.tensor([i for i in range(num_frames) if i not in input_idxs])], dim=0)
 
         images_and_camera_poses = {
+            "sample_id": example_id,
             "gt_images": self.all_rgbs[example_id][frame_idxs].clone(),
             "world_view_transforms": self.all_world_view_transforms[example_id][frame_idxs],
             "view_to_world_transforms": self.all_view_to_world_transforms[example_id][frame_idxs],
