@@ -54,9 +54,9 @@ def processSI_target(pathfile):
 def normalize_channels_min_max(tensor):
     """
     Normalize each channel in the tensor individually based on min and max values.
-    Handles both 3D and 4D tensors.
+    Handles 2D, 3D, and 4D tensors.
 
-    :param tensor: Tensor of shape [B, C, H, W] or [B, N, C]
+    :param tensor: Tensor of shape [B, C, H, W], [B, N, C], or [N, C]
     :return: Normalized tensor
     """
     if tensor.dim() == 4:  # Case for [B, C, H, W] format
@@ -65,6 +65,9 @@ def normalize_channels_min_max(tensor):
     elif tensor.dim() == 3:  # Case for [B, N, C] format
         min_vals = tensor.amin(dim=1, keepdim=True)  # Min over N dimension
         max_vals = tensor.amax(dim=1, keepdim=True)  # Max over N dimension
+    elif tensor.dim() == 2:  # Case for [N, C] format
+        min_vals = tensor.amin(dim=0, keepdim=True)  # Min over N dimension
+        max_vals = tensor.amax(dim=0, keepdim=True)  # Max over N dimension
     else:
         raise ValueError(f"Unsupported tensor shape: {tensor.shape}")
 
@@ -74,52 +77,71 @@ def normalize_channels_min_max(tensor):
     return normalized
 
 
+    # Normalize each channel individually
+    normalized = (tensor - min_vals) / (max_vals - min_vals + 1e-8)
+    
+    return normalized
+
+
 def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
     total_loss = 0.0
-    
+    # print(f'gaussian_splats["xyz"].shape: {gaussian_splats["xyz"].shape}, target_reconstruction["xyz"].shape: {target_reconstruction["xyz"].shape}')
+
     # Compare 'xyz' components
     if 'xyz' in target_reconstruction and 'xyz' in gaussian_splats:
+        gaussian_splats["xyz"] = gaussian_splats["xyz"].unsqueeze(0)
         target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])
         current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])
         # Ensure batch sizes match
-        if current_xyz.shape[0] != target_xyz.shape[0]:
-            target_xyz = target_xyz.repeat(current_xyz.shape[0], 1, 1)
+        # print(f'current_xyz.shape: {current_xyz.shape[0]}, target_xyz.shape: {target_xyz.shape[0]}')
+        # if current_xyz.shape[0] != target_xyz.shape[0]:
+        #     target_xyz = target_xyz.repeat(current_xyz.shape[0], 1, 1)
         total_loss += weights['xyz'] * torch.nn.functional.mse_loss(current_xyz, target_xyz)
+        # print(f" weights['xyz']: {weights['xyz'] * torch.nn.functional.mse_loss(current_xyz, target_xyz)}")
 
     # Compare 'opacity' components
     if 'opacity' in target_reconstruction and 'opacity' in gaussian_splats:
+        gaussian_splats["opacity"] = gaussian_splats["opacity"].unsqueeze(0)
         target_opacity = normalize_channels_min_max(target_reconstruction['opacity'])
         current_opacity = normalize_channels_min_max(gaussian_splats['opacity'])
         # Ensure batch sizes match
-        if current_opacity.shape[0] != target_opacity.shape[0]:
-            target_opacity = target_opacity.repeat(current_opacity.shape[0], 1, 1)
+        # if current_opacity.shape[0] != target_opacity.shape[0]:
+        #     target_opacity = target_opacity.repeat(current_opacity.shape[0], 1, 1)
         total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_opacity)
+        # print(f" weights['opacity']: {weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_opacity)}")
 
     # Compare 'scaling' components
     if 'scaling' in target_reconstruction and 'scaling' in gaussian_splats:
+        gaussian_splats["scaling"] = gaussian_splats["scaling"].unsqueeze(0)
         target_scaling = normalize_channels_min_max(target_reconstruction['scaling'])
         current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
         # Ensure batch sizes match
-        if current_scaling.shape[0] != target_scaling.shape[0]:
-            target_scaling = target_scaling.repeat(current_scaling.shape[0], 1, 1)
+        # if current_scaling.shape[0] != target_scaling.shape[0]:
+        #     target_scaling = target_scaling.repeat(current_scaling.shape[0], 1, 1)
         total_loss += weights['scaling'] * torch.nn.functional.mse_loss(current_scaling, target_scaling)
+        # print(f" weights['scaling']: {weights['scaling'] * torch.nn.functional.mse_loss(current_scaling, target_scaling)}")
 
     # Compare 'features_dc' components
     if 'features_dc' in target_reconstruction and 'features_dc' in gaussian_splats:
+        gaussian_splats["features_dc"] = gaussian_splats["features_dc"].unsqueeze(0)
         target_features_dc = normalize_channels_min_max(target_reconstruction['features_dc'])
         current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
         # Ensure batch sizes match
-        if current_features_dc.shape[0] != target_features_dc.shape[0]:
-            target_features_dc = target_features_dc.repeat(current_features_dc.shape[0], 1, 1, 1)
+        # if current_features_dc.shape[0] != target_features_dc.shape[0]:
+        #     target_features_dc = target_features_dc.repeat(current_features_dc.shape[0], 1, 1, 1)
         total_loss += weights['features_dc'] * torch.nn.functional.mse_loss(current_features_dc, target_features_dc)
+        # print(f" weights['features_dc']: {weights['features_dc'] * torch.nn.functional.mse_loss(current_features_dc, target_features_dc)}")
+
 
     # Compare 'features_rest' components
     if 'features_rest' in target_reconstruction and 'features_rest' in gaussian_splats:
+        gaussian_splats["features_rest"] = gaussian_splats["features_rest"].unsqueeze(0)
         target_features_rest = normalize_channels_min_max(target_reconstruction['features_rest'])
         current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
         # Ensure batch sizes match
-        if current_features_rest.shape[0] != target_features_rest.shape[0]:
-            target_features_rest = target_features_rest.repeat(current_features_rest.shape[0], 1, 1, 1)
+        # if current_features_rest.shape[0] != target_features_rest.shape[0]:
+        #     target_features_rest = target_features_rest.repeat(current_features_rest.shape[0], 1, 1, 1)
+        # print(f" weights['features_rest']: {weights['features_rest'] * torch.nn.functional.mse_loss(current_features_rest, target_features_rest)}")
         total_loss += weights['features_rest'] * torch.nn.functional.mse_loss(current_features_rest, target_features_rest)
 
     return total_loss
@@ -265,7 +287,7 @@ def main(cfg: DictConfig):
     iteration = first_iter
 
     # load the reconstructions target.
-    rec_path = "/content/cv/SI_target"
+    rec_path = "/content/SI_target"
     recs_target = processSI_target(rec_path)
     custom_hyp = 0.1
         # Weights for each component in the custom loss function
@@ -330,6 +352,8 @@ def main(cfg: DictConfig):
                 # Rendering is done sequentially because gaussian rasterization code
                 # does not support batching
                 gaussian_splat_batch = {k: v[b_idx].contiguous() for k, v in gaussian_splats.items()}
+                # print(f'gaussian_splat_batch keys: {gaussian_splat_batch["xyz"].shape}')
+
                 for r_idx in range(cfg.data.input_images, data["gt_images"].shape[1]):
                     if "focals_pixels" in data.keys():
                         focals_pixels_render = data["focals_pixels"][b_idx, r_idx].cpu()
@@ -354,22 +378,30 @@ def main(cfg: DictConfig):
 
             # 2. custom loss
             # get reconstruction target
-            
-            target_reconstruction = recs_target[data['sample_id'][0]]
-            # image = render_predicted({k: v[0].contiguous() for k, v in target_reconstruction.items()},
-            #                 data["world_view_transforms"][0, r_idx],
-            #                 data["full_proj_transforms"][0, r_idx], 
-            #                 data["camera_centers"][0, r_idx],
-            #                 background,
-            #                 cfg,
-            #                 focals_pixels=focals_pixels_render)["render"]
-            # print(f'target_reconstruction: {target_reconstruction.keys()}')
-            # print(f'current_reconstruction: {rendered_images.shape}')
-            # print(f"target_reconstruction['features_dc'] shape: {image.shape}")
+            # Iterate over the batch
+            total_custom_loss = 0.0  # Initialize total custom loss for the batch
+            # batch_size = len(data['sample_id'])
 
+            # for b_idx in range(batch_size):
+            #     # Extract the sample ID and corresponding target reconstruction
+            #     sample_id = data['sample_id'][b_idx]
+            #     # print(f'b_idx: {b_idx}, sample_id: {sample_id}')
+            #     target_reconstruction = recs_target[sample_id]
 
-            # normalized_current_reconstruction = normalize_channels_min_max(gaussian_splats)
-            # normalized_target_reconstruction = normalize_channels_min_max(target_reconstruction)
+            #     # Extract the Gaussian splats for this particular sample
+            #     gaussian_splat_sample = {k: v[b_idx].contiguous() for k, v in gaussian_splats.items()}
+
+            #     # print(f'gaussian_splats.shape: {gaussian_splats["xyz"].shape}, target_reconstruction.shape: {target_reconstruction["xyz"].shape}')
+
+            #     # Compute the custom loss for this sample
+            #     custom_loss = custom_loss_fn(target_reconstruction, gaussian_splat_sample, weights)
+
+            #     # Accumulate the custom loss for the batch
+            #     total_custom_loss += custom_loss
+
+# Now `total_custom_loss` holds the sum of custom losses for all samples in the batch
+
+            target_reconstruction = recs_target[data['sample_id']]
             custom_loss = custom_loss_fn(target_reconstruction, gaussian_splats, weights)
             # print(f'custom loss is : {custom_loss}')
             if cfg.opt.lambda_lpips != 0:
@@ -377,7 +409,7 @@ def main(cfg: DictConfig):
                     lpips_fn(rendered_images * 2 - 1, gt_images * 2 - 1),
                     )
 
-            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips + custom_loss * cfg.opt.lambda_custom
+            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips + total_custom_loss * cfg.opt.lambda_custom
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 

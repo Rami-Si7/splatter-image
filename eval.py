@@ -70,7 +70,17 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
         ssim_all_renders_cond = []
         lpips_all_renders_cond = []
 
-        data = {k: v.to(device) for k, v in data.items()}
+        # data = {k: v.to(device) for k, v in data.items()}
+        # data = {k: (torch.tensor(v).to(device) if isinstance(v, list) else v.to(device)) for k, v in data.items()}
+        # data = {k: (torch.tensor(v).to(device) if isinstance(v, list) else v.to(device) if isinstance(v, torch.Tensor) else v) for k, v in data.items()}
+        data = {
+            k: (
+                torch.tensor(v).to(device) if isinstance(v, list) and all(isinstance(item, (int, float)) for item in v)
+                else v.to(device) if isinstance(v, torch.Tensor)
+                else v
+            )
+            for k, v in data.items()
+}
 
         rot_transform_quats = data["source_cv2wT_quat"][:, :model_cfg.data.input_images]
 
