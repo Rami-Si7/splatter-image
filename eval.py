@@ -88,9 +88,9 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
         example_id = dataloader.dataset.get_example_id(d_idx)
         print(f'here here is the example_id:{example_id}****')
         
-        # Create a directory for this sample to save its reconstruction (splatter image)
-        sample_folder = os.path.join(si_target_path, f"{example_id}")
-        os.makedirs(sample_folder, exist_ok=True)
+        # # Create a directory for this sample to save its reconstruction (splatter image)
+        # sample_folder = os.path.join(si_target_path, f"{example_id}")
+        # os.makedirs(sample_folder, exist_ok=True)
 
         if d_idx < save_vis:
             out_example_gt = os.path.join(out_folder, "{}_".format(d_idx) + example_id + "_gt")
@@ -106,8 +106,8 @@ def evaluate_dataset(model, dataloader, device, model_cfg, save_vis=0, out_folde
         # for key, value in reconstruction.items():
         #     print(f"{key}: Shape = {value.shape}")
         # Save the reconstruction (splatter image) to the sample's folder
-        reconstruction_file = os.path.join(sample_folder, f"reconstruction.pt")
-        torch.save(reconstruction, reconstruction_file)
+        # reconstruction_file = os.path.join(sample_folder, f"reconstruction.pt")
+        # torch.save(reconstruction, reconstruction_file)
 
         for r_idx in range(data["gt_images"].shape[1]):
             if "focals_pixels" in data.keys():

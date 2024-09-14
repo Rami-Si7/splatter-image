@@ -51,28 +51,80 @@ def processSI_target(pathfile):
     # Return the dictionary with folder names and their reconstructions
     return reconstructions
 
-def normalize_channels_min_max(reconstruction):
+def normalize_channels_min_max(tensor):
     """
-    Normalize each channel in the reconstruction tensor individually based on min and max values.
-    Handles both batch and per-channel normalization.
+    Normalize each channel in the tensor individually based on min and max values.
+    Handles both 3D and 4D tensors.
 
-    :param reconstruction: Tensor of shape [B, C, H, W] (Batch, Channels, Height, Width)
-    :return: Normalized tensor of the same shape
+    :param tensor: Tensor of shape [B, C, H, W] or [B, N, C]
+    :return: Normalized tensor
     """
-    # Find min and max for each channel across the batch
-    min_vals = reconstruction.amin(dim=[2, 3], keepdim=True)  # Min over H and W dimensions
-    max_vals = reconstruction.amax(dim=[2, 3], keepdim=True)  # Max over H and W dimensions
+    if tensor.dim() == 4:  # Case for [B, C, H, W] format
+        min_vals = tensor.amin(dim=[2, 3], keepdim=True)  # Min over H and W dimensions
+        max_vals = tensor.amax(dim=[2, 3], keepdim=True)  # Max over H and W dimensions
+    elif tensor.dim() == 3:  # Case for [B, N, C] format
+        min_vals = tensor.amin(dim=1, keepdim=True)  # Min over N dimension
+        max_vals = tensor.amax(dim=1, keepdim=True)  # Max over N dimension
+    else:
+        raise ValueError(f"Unsupported tensor shape: {tensor.shape}")
 
     # Normalize each channel individually
-    normalized = (reconstruction - min_vals) / (max_vals - min_vals + 1e-8)
+    normalized = (tensor - min_vals) / (max_vals - min_vals + 1e-8)
     
     return normalized
 
 
-def custom_loss_fn(reconstruction, target_SI):
-    # Your custom loss logic goes here. For example, it could be L1 or L2 loss.
-    # Example using L2 loss:
-    return torch.nn.functional.mse_loss(reconstruction, target_SI)
+def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
+    total_loss = 0.0
+    
+    # Compare 'xyz' components
+    if 'xyz' in target_reconstruction and 'xyz' in gaussian_splats:
+        target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])
+        current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])
+        # Ensure batch sizes match
+        if current_xyz.shape[0] != target_xyz.shape[0]:
+            target_xyz = target_xyz.repeat(current_xyz.shape[0], 1, 1)
+        total_loss += weights['xyz'] * torch.nn.functional.mse_loss(current_xyz, target_xyz)
+
+    # Compare 'opacity' components
+    if 'opacity' in target_reconstruction and 'opacity' in gaussian_splats:
+        target_opacity = normalize_channels_min_max(target_reconstruction['opacity'])
+        current_opacity = normalize_channels_min_max(gaussian_splats['opacity'])
+        # Ensure batch sizes match
+        if current_opacity.shape[0] != target_opacity.shape[0]:
+            target_opacity = target_opacity.repeat(current_opacity.shape[0], 1, 1)
+        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_opacity)
+
+    # Compare 'scaling' components
+    if 'scaling' in target_reconstruction and 'scaling' in gaussian_splats:
+        target_scaling = normalize_channels_min_max(target_reconstruction['scaling'])
+        current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
+        # Ensure batch sizes match
+        if current_scaling.shape[0] != target_scaling.shape[0]:
+            target_scaling = target_scaling.repeat(current_scaling.shape[0], 1, 1)
+        total_loss += weights['scaling'] * torch.nn.functional.mse_loss(current_scaling, target_scaling)
+
+    # Compare 'features_dc' components
+    if 'features_dc' in target_reconstruction and 'features_dc' in gaussian_splats:
+        target_features_dc = normalize_channels_min_max(target_reconstruction['features_dc'])
+        current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
+        # Ensure batch sizes match
+        if current_features_dc.shape[0] != target_features_dc.shape[0]:
+            target_features_dc = target_features_dc.repeat(current_features_dc.shape[0], 1, 1, 1)
+        total_loss += weights['features_dc'] * torch.nn.functional.mse_loss(current_features_dc, target_features_dc)
+
+    # Compare 'features_rest' components
+    if 'features_rest' in target_reconstruction and 'features_rest' in gaussian_splats:
+        target_features_rest = normalize_channels_min_max(target_reconstruction['features_rest'])
+        current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
+        # Ensure batch sizes match
+        if current_features_rest.shape[0] != target_features_rest.shape[0]:
+            target_features_rest = target_features_rest.repeat(current_features_rest.shape[0], 1, 1, 1)
+        total_loss += weights['features_rest'] * torch.nn.functional.mse_loss(current_features_rest, target_features_rest)
+
+    return total_loss
+
+
 
 
 @hydra.main(version_base=None, config_path='configs', config_name="default_config")
@@ -215,12 +267,20 @@ def main(cfg: DictConfig):
     # load the reconstructions target.
     rec_path = "/content/cv/SI_target"
     recs_target = processSI_target(rec_path)
-
+    custom_hyp = 0.1
+        # Weights for each component in the custom loss function
+    weights = {
+        'xyz': 1.0,
+        'opacity': 0.5,
+        'scaling': 0.3,
+        'features_dc': 0.1,
+        'features_rest': 0.1
+    }
     for num_epoch in range((cfg.opt.iterations + 1 - first_iter)// len(dataloader) + 1):
         dataloader.sampler.set_epoch(num_epoch)        
 
         for data in dataloader:
-            print(data.keys())
+            # print(data.keys())
             iteration += 1
 
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
@@ -242,7 +302,7 @@ def main(cfg: DictConfig):
                                                 rot_transform_quats,
                                                 focals_pixels_pred)
 
-
+            # print(f'gaussian_splats keys: {gaussian_splats.keys()}')
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 # regularize very big gaussians
                 if len(torch.where(gaussian_splats["scaling"] > 20)[0]) > 0:
@@ -296,19 +356,28 @@ def main(cfg: DictConfig):
             # get reconstruction target
             
             target_reconstruction = recs_target[data['sample_id'][0]]
-            print(f'target_reconstruction: {target_reconstruction.keys()}')
-            print(f'current_reconstruction: {rendered_images.shape}')
+            # image = render_predicted({k: v[0].contiguous() for k, v in target_reconstruction.items()},
+            #                 data["world_view_transforms"][0, r_idx],
+            #                 data["full_proj_transforms"][0, r_idx], 
+            #                 data["camera_centers"][0, r_idx],
+            #                 background,
+            #                 cfg,
+            #                 focals_pixels=focals_pixels_render)["render"]
+            # print(f'target_reconstruction: {target_reconstruction.keys()}')
+            # print(f'current_reconstruction: {rendered_images.shape}')
+            # print(f"target_reconstruction['features_dc'] shape: {image.shape}")
 
-            normalized_current_reconstruction = normalize_channels_min_max(rendered_images)
-            normalized_target_reconstruction = normalize_channels_min_max(target_reconstruction)
-            custom_loss = custom_loss_fn(normalized_current_reconstruction, normalized_target_reconstruction)
-            print(custom_loss)
+
+            # normalized_current_reconstruction = normalize_channels_min_max(gaussian_splats)
+            # normalized_target_reconstruction = normalize_channels_min_max(target_reconstruction)
+            custom_loss = custom_loss_fn(target_reconstruction, gaussian_splats, weights)
+            # print(f'custom loss is : {custom_loss}')
             if cfg.opt.lambda_lpips != 0:
                 lpips_loss_sum = torch.mean(
                     lpips_fn(rendered_images * 2 - 1, gt_images * 2 - 1),
                     )
 
-            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips
+            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips + custom_loss * cfg.opt.lambda_custom
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 

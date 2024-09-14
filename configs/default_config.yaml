@@ -30,6 +30,7 @@ opt:
     beta: 0.9999
   lambda_lpips: 0.0
   pretrained_ckpt: null
+  lambda_custom: 0.3
 
 model:
   max_sh_degree: 1
@@ -55,7 +56,7 @@ model:
 
 logging:
   ckpt_iterations: 1000
-  val_log: 10000
+  val_log: 3
   loss_log: 10
-  loop_log: 10000
-  render_log: 10000
+  loop_log: 1000
+  render_log: 1000
