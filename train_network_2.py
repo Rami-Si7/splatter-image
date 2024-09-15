@@ -380,29 +380,32 @@ def main(cfg: DictConfig):
             # get reconstruction target
             # Iterate over the batch
             total_custom_loss = 0.0  # Initialize total custom loss for the batch
-            # batch_size = len(data['sample_id'])
+            batch_size = len(data['sample_id'])
 
-            # for b_idx in range(batch_size):
-            #     # Extract the sample ID and corresponding target reconstruction
-            #     sample_id = data['sample_id'][b_idx]
-            #     # print(f'b_idx: {b_idx}, sample_id: {sample_id}')
-            #     target_reconstruction = recs_target[sample_id]
+            for b_idx in range(batch_size):
+                # Extract the sample ID and corresponding target reconstruction
+                sample_id = data['sample_id'][b_idx]
+                # print(f'b_idx: {b_idx}, sample_id: {sample_id}')
+                target_reconstruction = {k: v.to(gaussian_splats['xyz'].device) for k, v in recs_target[sample_id].items()}
 
-            #     # Extract the Gaussian splats for this particular sample
-            #     gaussian_splat_sample = {k: v[b_idx].contiguous() for k, v in gaussian_splats.items()}
+                # Extract the Gaussian splats for this particular sample
+                gaussian_splat_sample = {k: v[b_idx].contiguous() for k, v in gaussian_splats.items()}
+                # print(f'gaussian_splat_sample: {gaussian_splat_sample}')
 
-            #     # print(f'gaussian_splats.shape: {gaussian_splats["xyz"].shape}, target_reconstruction.shape: {target_reconstruction["xyz"].shape}')
+                # print(f'gaussian_splats.shape: {gaussian_splats["xyz"].shape}, target_reconstruction.shape: {target_reconstruction["xyz"].shape}')
 
-            #     # Compute the custom loss for this sample
-            #     custom_loss = custom_loss_fn(target_reconstruction, gaussian_splat_sample, weights)
+                # Compute the custom loss for this sample
+                custom_loss = custom_loss_fn(target_reconstruction, gaussian_splat_sample, weights)
 
-            #     # Accumulate the custom loss for the batch
-            #     total_custom_loss += custom_loss
+                # Accumulate the custom loss for the batch
+                total_custom_loss += custom_loss
+
+            total_custom_loss /= batch_size
 
 # Now `total_custom_loss` holds the sum of custom losses for all samples in the batch
 
-            target_reconstruction = recs_target[data['sample_id']]
-            custom_loss = custom_loss_fn(target_reconstruction, gaussian_splats, weights)
+            # target_reconstruction = recs_target[data['sample_id']]
+            # custom_loss = custom_loss_fn(target_reconstruction, gaussian_splats, weights)
             # print(f'custom loss is : {custom_loss}')
             if cfg.opt.lambda_lpips != 0:
                 lpips_loss_sum = torch.mean(
@@ -545,6 +548,19 @@ def main(cfg: DictConfig):
                 else:
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
+                if (iteration + 1) % 1000 == 0 or fname_to_save == "model_best.pth":
+                  drive_save_dir = "/content/drive/MyDrive/train_modified_network"
+                  os.makedirs(drive_save_dir, exist_ok=True)
+                  if fname_to_save == "model_best.pth":
+                      drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
+                  else:
+                      drive_save_path = os.path.join(drive_save_dir, f"model_latest_{iteration + 1}.pth")
+                  
+                  torch.save(ckpt_save_dict, drive_save_path)
+                  print(f"Saved model to Google Drive at {drive_save_path}")
+            # Save to Google Drive every 1000 iterations or when the best model is found
+
+
 
             gaussian_predictor.train()
 

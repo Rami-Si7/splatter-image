@@ -30,7 +30,7 @@ opt:
     beta: 0.9999
   lambda_lpips: 0.0
   pretrained_ckpt: null
-  lambda_custom: 0.5
+  lambda_custom: 0.4
 
 model:
   max_sh_degree: 1
