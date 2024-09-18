@@ -85,66 +85,64 @@ def normalize_channels_min_max(tensor):
 
 def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
     total_loss = 0.0
-    # print(f'gaussian_splats["xyz"].shape: {gaussian_splats["xyz"].shape}, target_reconstruction["xyz"].shape: {target_reconstruction["xyz"].shape}')
 
-    # Compare 'xyz' components
+    # Compare 'xyz' components, weighted by opacity
     if 'xyz' in target_reconstruction and 'xyz' in gaussian_splats:
         gaussian_splats["xyz"] = gaussian_splats["xyz"].unsqueeze(0)
         target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])
         current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])
-        # Ensure batch sizes match
-        # print(f'current_xyz.shape: {current_xyz.shape[0]}, target_xyz.shape: {target_xyz.shape[0]}')
-        # if current_xyz.shape[0] != target_xyz.shape[0]:
-        #     target_xyz = target_xyz.repeat(current_xyz.shape[0], 1, 1)
-        total_loss += weights['xyz'] * torch.nn.functional.mse_loss(current_xyz, target_xyz)
-        # print(f" weights['xyz']: {weights['xyz'] * torch.nn.functional.mse_loss(current_xyz, target_xyz)}")
+        target_opacity = target_reconstruction['opacity']
 
-    # Compare 'opacity' components
-    if 'opacity' in target_reconstruction and 'opacity' in gaussian_splats:
-        gaussian_splats["opacity"] = gaussian_splats["opacity"].unsqueeze(0)
-        target_opacity = normalize_channels_min_max(target_reconstruction['opacity'])
-        current_opacity = normalize_channels_min_max(gaussian_splats['opacity'])
-        # Ensure batch sizes match
-        # if current_opacity.shape[0] != target_opacity.shape[0]:
-        #     target_opacity = target_opacity.repeat(current_opacity.shape[0], 1, 1)
-        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_opacity)
-        # print(f" weights['opacity']: {weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_opacity)}")
+        with torch.no_grad():  # Don't track gradients for intermediate steps
+            diff_xyz = current_xyz.sub(target_xyz).pow(2)
+            weighted_diff_xyz = diff_xyz.mul(target_opacity)
 
-    # Compare 'scaling' components
+        total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)
+
+        del diff_xyz, weighted_diff_xyz, target_xyz, current_xyz, target_opacity
+        torch.cuda.empty_cache()
+
+    # Compare 'scaling' components, weighted by opacity
     if 'scaling' in target_reconstruction and 'scaling' in gaussian_splats:
         gaussian_splats["scaling"] = gaussian_splats["scaling"].unsqueeze(0)
         target_scaling = normalize_channels_min_max(target_reconstruction['scaling'])
         current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
-        # Ensure batch sizes match
-        # if current_scaling.shape[0] != target_scaling.shape[0]:
-        #     target_scaling = target_scaling.repeat(current_scaling.shape[0], 1, 1)
-        total_loss += weights['scaling'] * torch.nn.functional.mse_loss(current_scaling, target_scaling)
-        # print(f" weights['scaling']: {weights['scaling'] * torch.nn.functional.mse_loss(current_scaling, target_scaling)}")
+        target_opacity = target_reconstruction['opacity']
 
-    # Compare 'features_dc' components
+        with torch.no_grad():
+            diff_scaling = current_scaling.sub(target_scaling).pow(2)
+            weighted_diff_scaling = diff_scaling.mul(target_opacity)
+
+        total_loss += weights['scaling'] * torch.mean(weighted_diff_scaling)
+
+        del diff_scaling, weighted_diff_scaling, target_scaling, current_scaling, target_opacity
+        torch.cuda.empty_cache()
+
+    # Compare 'features_dc' components, weighted by opacity
     if 'features_dc' in target_reconstruction and 'features_dc' in gaussian_splats:
         gaussian_splats["features_dc"] = gaussian_splats["features_dc"].unsqueeze(0)
         target_features_dc = normalize_channels_min_max(target_reconstruction['features_dc'])
         current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
-        # Ensure batch sizes match
-        # if current_features_dc.shape[0] != target_features_dc.shape[0]:
-        #     target_features_dc = target_features_dc.repeat(current_features_dc.shape[0], 1, 1, 1)
-        total_loss += weights['features_dc'] * torch.nn.functional.mse_loss(current_features_dc, target_features_dc)
-        # print(f" weights['features_dc']: {weights['features_dc'] * torch.nn.functional.mse_loss(current_features_dc, target_features_dc)}")
+        target_opacity = target_reconstruction['opacity']
 
+        with torch.no_grad():
+            diff_features_dc = current_features_dc.sub(target_features_dc).pow(2)
+            weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
 
-    # Compare 'features_rest' components
-    if 'features_rest' in target_reconstruction and 'features_rest' in gaussian_splats:
-        gaussian_splats["features_rest"] = gaussian_splats["features_rest"].unsqueeze(0)
-        target_features_rest = normalize_channels_min_max(target_reconstruction['features_rest'])
-        current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
-        # Ensure batch sizes match
-        # if current_features_rest.shape[0] != target_features_rest.shape[0]:
-        #     target_features_rest = target_features_rest.repeat(current_features_rest.shape[0], 1, 1, 1)
-        # print(f" weights['features_rest']: {weights['features_rest'] * torch.nn.functional.mse_loss(current_features_rest, target_features_rest)}")
-        total_loss += weights['features_rest'] * torch.nn.functional.mse_loss(current_features_rest, target_features_rest)
+        total_loss += weights['features_dc'] * torch.mean(weighted_diff_features_dc)
+
+        del diff_features_dc, weighted_diff_features_dc, target_features_dc, current_features_dc, target_opacity
+        torch.cuda.empty_cache()
+
+    # Compare 'opacity' components using standard MSE
+    if 'opacity' in target_reconstruction and 'opacity' in gaussian_splats:
+        gaussian_splats["opacity"] = gaussian_splats["opacity"].unsqueeze(0)
+        current_opacity = gaussian_splats['opacity']
+        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_reconstruction['opacity'])
 
     return total_loss
+
+
 
 
 
@@ -293,10 +291,10 @@ def main(cfg: DictConfig):
         # Weights for each component in the custom loss function
     weights = {
         'xyz': 1.0,
-        'opacity': 0.5,
-        'scaling': 0.3,
-        'features_dc': 0.1,
-        'features_rest': 0.1
+        'opacity': 1,
+        'scaling': 1,
+        'features_dc': 1,
+        'features_rest': 1
     }
     for num_epoch in range((cfg.opt.iterations + 1 - first_iter)// len(dataloader) + 1):
         dataloader.sampler.set_epoch(num_epoch)        
@@ -549,7 +547,7 @@ def main(cfg: DictConfig):
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
                 if (iteration + 1) % 1000 == 0 or fname_to_save == "model_best.pth":
-                  drive_save_dir = "/content/drive/MyDrive/train_modified_network"
+                  drive_save_dir = "/content/drive/MyDrive/train_modified_network_batch_4"
                   os.makedirs(drive_save_dir, exist_ok=True)
                   if fname_to_save == "model_best.pth":
                       drive_save_path = os.path.join(drive_save_dir, "model_best.pth")

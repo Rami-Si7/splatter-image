@@ -372,6 +372,22 @@ def main(cfg: DictConfig):
                 else:
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
+                # Check if it's time to save the model
+                if (iteration + 1) % 3000 == 0 or fname_to_save == "model_best.pth":
+                    # Set the save directory only when you need to save the model
+                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_4"
+                    os.makedirs(drive_save_dir, exist_ok=True)
+
+                    # Now, decide which file to save
+                    if fname_to_save == "model_best.pth":
+                        drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
+                    else:
+                        drive_save_path = os.path.join(drive_save_dir, f"model_latest_{iteration + 1}.pth")
+                    
+                    # Save the model
+                    torch.save(ckpt_save_dict, drive_save_path)
+                    print(f"Saved model to Google Drive at {drive_save_path}")
+
 
             gaussian_predictor.train()
 
