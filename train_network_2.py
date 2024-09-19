@@ -93,9 +93,9 @@ def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
         current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])
         target_opacity = target_reconstruction['opacity']
 
-        with torch.no_grad():  # Don't track gradients for intermediate steps
-            diff_xyz = current_xyz.sub(target_xyz).pow(2)
-            weighted_diff_xyz = diff_xyz.mul(target_opacity)
+        # Element-wise operations without creating large intermediate tensors
+        diff_xyz = current_xyz.sub(target_xyz).pow(2)  # In-place subtraction and square
+        weighted_diff_xyz = diff_xyz.mul(target_opacity)  # Element-wise multiplication with target opacity
 
         total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)
 
@@ -109,9 +109,9 @@ def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
         current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
         target_opacity = target_reconstruction['opacity']
 
-        with torch.no_grad():
-            diff_scaling = current_scaling.sub(target_scaling).pow(2)
-            weighted_diff_scaling = diff_scaling.mul(target_opacity)
+        # Element-wise operations for scaling
+        diff_scaling = current_scaling.sub(target_scaling).pow(2)
+        weighted_diff_scaling = diff_scaling.mul(target_opacity)
 
         total_loss += weights['scaling'] * torch.mean(weighted_diff_scaling)
 
@@ -125,13 +125,32 @@ def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
         current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
         target_opacity = target_reconstruction['opacity']
 
-        with torch.no_grad():
-            diff_features_dc = current_features_dc.sub(target_features_dc).pow(2)
-            weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
+        # Element-wise operations for features_dc
+        diff_features_dc = current_features_dc.sub(target_features_dc).pow(2)
+        weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
 
         total_loss += weights['features_dc'] * torch.mean(weighted_diff_features_dc)
 
         del diff_features_dc, weighted_diff_features_dc, target_features_dc, current_features_dc, target_opacity
+        torch.cuda.empty_cache()
+
+    # Compare 'features_rest' components, weighted by opacity (New addition)
+    if 'features_rest' in target_reconstruction and 'features_rest' in gaussian_splats:
+        gaussian_splats["features_rest"] = gaussian_splats["features_rest"].unsqueeze(0)
+        target_features_rest = normalize_channels_min_max(target_reconstruction['features_rest'])
+        current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
+        target_opacity = target_reconstruction['opacity']
+
+        # Reduce the 3x3 part by averaging
+        mean_features_rest = torch.mean(current_features_rest.sub(target_features_rest).pow(2), dim=[2, 3], keepdim=True)  # Now shape is [1, 128*128, 1]
+
+        # Apply the opacity weighting
+        weighted_diff_features_rest = mean_features_rest.mul(target_opacity)  # Element-wise multiplication
+
+        # Compute the mean of the weighted result
+        total_loss += weights['features_rest'] * torch.mean(weighted_diff_features_rest)
+
+        del mean_features_rest, weighted_diff_features_rest, target_features_rest, current_features_rest, target_opacity
         torch.cuda.empty_cache()
 
     # Compare 'opacity' components using standard MSE
@@ -141,6 +160,7 @@ def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
         total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_reconstruction['opacity'])
 
     return total_loss
+
 
 
 
@@ -291,10 +311,10 @@ def main(cfg: DictConfig):
         # Weights for each component in the custom loss function
     weights = {
         'xyz': 1.0,
-        'opacity': 1,
-        'scaling': 1,
-        'features_dc': 1,
-        'features_rest': 1
+        'opacity': 1.0,
+        'scaling': 1.0,
+        'features_dc': 1.0,
+        'features_rest': 1.0
     }
     for num_epoch in range((cfg.opt.iterations + 1 - first_iter)// len(dataloader) + 1):
         dataloader.sampler.set_epoch(num_epoch)        
@@ -421,8 +441,12 @@ def main(cfg: DictConfig):
             # ============ Optimization ===============
             optimizer.step()
             optimizer.zero_grad()
+
             print("finished opt {} on process {}".format(iteration, fabric.global_rank))
 
+            # ========== Clear memory after loss computation ==========
+            del rendered_images, gt_images, gaussian_splats, gaussian_splat_batch
+            torch.cuda.empty_cache()
             if cfg.opt.ema.use and fabric.is_global_zero:
                 ema.update()
 
