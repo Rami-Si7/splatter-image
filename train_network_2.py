@@ -83,81 +83,62 @@ def normalize_channels_min_max(tensor):
     return normalized
 
 
-def custom_loss_fn(target_reconstruction, gaussian_splats, weights):
+def custom_loss_fn_batched(target_reconstruction, gaussian_splats, weights):
     total_loss = 0.0
-
-    # Compare 'xyz' components, weighted by opacity
+    
+    # Process the entire batch at once, without looping through each sample
+    
+    # 'xyz' components comparison
     if 'xyz' in target_reconstruction and 'xyz' in gaussian_splats:
-        gaussian_splats["xyz"] = gaussian_splats["xyz"].unsqueeze(0)
-        target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])
-        current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])
-        target_opacity = target_reconstruction['opacity']
+        target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])  # Shape: [Batch_size, C, H, W]
+        current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])       # Shape: [Batch_size, C, H, W]
+        target_opacity = target_reconstruction['opacity']                      # Shape: [Batch_size, C, H, W]
 
-        # Element-wise operations without creating large intermediate tensors
-        diff_xyz = current_xyz.sub(target_xyz).pow(2)  # In-place subtraction and square
-        weighted_diff_xyz = diff_xyz.mul(target_opacity)  # Element-wise multiplication with target opacity
+        # Vectorized difference over the entire batch
+        diff_xyz = current_xyz.sub(target_xyz).pow(2)                          # Shape: [Batch_size, C, H, W]
+        weighted_diff_xyz = diff_xyz.mul(target_opacity)                       # Shape: [Batch_size, C, H, W]
 
-        total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)
+        # Sum the loss over the batch
+        total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)           # Scalar
 
-        del diff_xyz, weighted_diff_xyz, target_xyz, current_xyz, target_opacity
-        torch.cuda.empty_cache()
-
-    # Compare 'scaling' components, weighted by opacity
+    # 'scaling' components comparison
     if 'scaling' in target_reconstruction and 'scaling' in gaussian_splats:
-        gaussian_splats["scaling"] = gaussian_splats["scaling"].unsqueeze(0)
         target_scaling = normalize_channels_min_max(target_reconstruction['scaling'])
         current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
         target_opacity = target_reconstruction['opacity']
 
-        # Element-wise operations for scaling
         diff_scaling = current_scaling.sub(target_scaling).pow(2)
         weighted_diff_scaling = diff_scaling.mul(target_opacity)
 
         total_loss += weights['scaling'] * torch.mean(weighted_diff_scaling)
 
-        del diff_scaling, weighted_diff_scaling, target_scaling, current_scaling, target_opacity
-        torch.cuda.empty_cache()
-
-    # Compare 'features_dc' components, weighted by opacity
+    # 'features_dc' components comparison
     if 'features_dc' in target_reconstruction and 'features_dc' in gaussian_splats:
-        gaussian_splats["features_dc"] = gaussian_splats["features_dc"].unsqueeze(0)
         target_features_dc = normalize_channels_min_max(target_reconstruction['features_dc'])
         current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
         target_opacity = target_reconstruction['opacity']
 
-        # Element-wise operations for features_dc
         diff_features_dc = current_features_dc.sub(target_features_dc).pow(2)
         weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
 
         total_loss += weights['features_dc'] * torch.mean(weighted_diff_features_dc)
 
-        del diff_features_dc, weighted_diff_features_dc, target_features_dc, current_features_dc, target_opacity
-        torch.cuda.empty_cache()
-
-    # Compare 'features_rest' components, weighted by opacity (New addition)
+    # 'features_rest' components comparison
     if 'features_rest' in target_reconstruction and 'features_rest' in gaussian_splats:
-        gaussian_splats["features_rest"] = gaussian_splats["features_rest"].unsqueeze(0)
         target_features_rest = normalize_channels_min_max(target_reconstruction['features_rest'])
         current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
         target_opacity = target_reconstruction['opacity']
 
-        # Reduce the 3x3 part by averaging
-        mean_features_rest = torch.mean(current_features_rest.sub(target_features_rest).pow(2), dim=[2, 3], keepdim=True)  # Now shape is [1, 128*128, 1]
+        mean_features_rest = torch.mean(current_features_rest.sub(target_features_rest).pow(2), dim=[2, 3], keepdim=True)
 
-        # Apply the opacity weighting
-        weighted_diff_features_rest = mean_features_rest.mul(target_opacity)  # Element-wise multiplication
+        weighted_diff_features_rest = mean_features_rest.mul(target_opacity)
 
-        # Compute the mean of the weighted result
         total_loss += weights['features_rest'] * torch.mean(weighted_diff_features_rest)
 
-        del mean_features_rest, weighted_diff_features_rest, target_features_rest, current_features_rest, target_opacity
-        torch.cuda.empty_cache()
-
-    # Compare 'opacity' components using standard MSE
+    # Opacity components comparison
     if 'opacity' in target_reconstruction and 'opacity' in gaussian_splats:
-        gaussian_splats["opacity"] = gaussian_splats["opacity"].unsqueeze(0)
-        current_opacity = gaussian_splats['opacity']
-        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(current_opacity, target_reconstruction['opacity'])
+        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(
+            gaussian_splats['opacity'], target_reconstruction['opacity'])
 
     return total_loss
 
@@ -307,7 +288,7 @@ def main(cfg: DictConfig):
     # load the reconstructions target.
     rec_path = "/content/SI_target"
     recs_target = processSI_target(rec_path)
-    custom_hyp = 0.1
+    custom_hyp = 0.01
         # Weights for each component in the custom loss function
     weights = {
         'xyz': 1.0,
@@ -322,6 +303,10 @@ def main(cfg: DictConfig):
         for data in dataloader:
             # print(data.keys())
             iteration += 1
+            if iteration > 3000:
+                custom_hyp = 0.03  # Increase after 5k iterations
+            if iteration > 8000:
+                custom_hyp = 0.1   # Further increase after 10k iterations
 
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
 
@@ -394,43 +379,15 @@ def main(cfg: DictConfig):
             # 1. base loss
             l12_loss_sum = loss_fn(rendered_images, gt_images)
 
-            # 2. custom loss
-            # get reconstruction target
-            # Iterate over the batch
-            total_custom_loss = 0.0  # Initialize total custom loss for the batch
-            batch_size = len(data['sample_id'])
+            # 2. Custom loss (batch)
+            total_custom_loss = custom_loss_fn_batched(recs_target, gaussian_splats, weights)
 
-            for b_idx in range(batch_size):
-                # Extract the sample ID and corresponding target reconstruction
-                sample_id = data['sample_id'][b_idx]
-                # print(f'b_idx: {b_idx}, sample_id: {sample_id}')
-                target_reconstruction = {k: v.to(gaussian_splats['xyz'].device) for k, v in recs_target[sample_id].items()}
-
-                # Extract the Gaussian splats for this particular sample
-                gaussian_splat_sample = {k: v[b_idx].contiguous() for k, v in gaussian_splats.items()}
-                # print(f'gaussian_splat_sample: {gaussian_splat_sample}')
-
-                # print(f'gaussian_splats.shape: {gaussian_splats["xyz"].shape}, target_reconstruction.shape: {target_reconstruction["xyz"].shape}')
-
-                # Compute the custom loss for this sample
-                custom_loss = custom_loss_fn(target_reconstruction, gaussian_splat_sample, weights)
-
-                # Accumulate the custom loss for the batch
-                total_custom_loss += custom_loss
-
-            total_custom_loss /= batch_size
-
-# Now `total_custom_loss` holds the sum of custom losses for all samples in the batch
-
-            # target_reconstruction = recs_target[data['sample_id']]
-            # custom_loss = custom_loss_fn(target_reconstruction, gaussian_splats, weights)
-            # print(f'custom loss is : {custom_loss}')
+            total_loss = (l12_loss_sum * (1.0 - cfg.opt.lambda_lpips)) + total_custom_loss * custom_hyp
             if cfg.opt.lambda_lpips != 0:
                 lpips_loss_sum = torch.mean(
                     lpips_fn(rendered_images * 2 - 1, gt_images * 2 - 1),
                     )
 
-            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips + total_custom_loss * cfg.opt.lambda_custom
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 
@@ -445,8 +402,8 @@ def main(cfg: DictConfig):
             print("finished opt {} on process {}".format(iteration, fabric.global_rank))
 
             # ========== Clear memory after loss computation ==========
-            del rendered_images, gt_images, gaussian_splats, gaussian_splat_batch
-            torch.cuda.empty_cache()
+            # del rendered_images, gt_images, gaussian_splats, gaussian_splat_batch
+            # torch.cuda.empty_cache()
             if cfg.opt.ema.use and fabric.is_global_zero:
                 ema.update()
 
@@ -571,7 +528,7 @@ def main(cfg: DictConfig):
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
                 if (iteration + 1) % 1000 == 0 or fname_to_save == "model_best.pth":
-                  drive_save_dir = "/content/drive/MyDrive/train_modified_network_batch_4"
+                  drive_save_dir = "/content/drive/MyDrive/train_modified_network_batch_4_lambda_0.01_0.03"
                   os.makedirs(drive_save_dir, exist_ok=True)
                   if fname_to_save == "model_best.pth":
                       drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
