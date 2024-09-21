@@ -304,8 +304,10 @@ def main(cfg: DictConfig):
             # print(data.keys())
             iteration += 1
             if iteration > 3000:
-                custom_hyp = 0.03  # Increase after 5k iterations
+                custom_hyp = 0.02  # Increase after 5k iterations
             if iteration > 8000:
+                custom_hyp = 0.05
+            if iteration > 12000:
                 custom_hyp = 0.1   # Further increase after 10k iterations
 
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
