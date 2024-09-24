@@ -333,8 +333,8 @@ def main(cfg: DictConfig):
 
         for data, target_batch in zip(dataloader, target_dataloader):
             iteration += 1
-            if iteration % 1000:
-              custom_lambda += 0.001
+            if iteration % 1000 == 0:
+              custom_lambda += 0.002
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
 
             # =============== Prepare input ================
@@ -434,7 +434,7 @@ def main(cfg: DictConfig):
             # ========= Logging =============
             with torch.no_grad():
                 if iteration % cfg.logging.loss_log == 0 and fabric.is_global_zero:
-                    wandb.log({"training_loss": np.log10(total_loss.item() + 1e-8)}, step=iteration)
+                    wandb.log({"training_loss": np.log10(total_loss.item() + 1e-8), "custom_lambda":custom_lambda}, step=iteration)
                     if cfg.opt.lambda_lpips != 0:
                         wandb.log({"training_l12_loss": np.log10(l12_loss_sum.item() + 1e-8)}, step=iteration)
                         wandb.log({"training_lpips_loss": np.log10(lpips_loss_sum.item() + 1e-8)}, step=iteration)
@@ -550,14 +550,14 @@ def main(cfg: DictConfig):
                 # Check if it's time to save the model
                 if (iteration + 1) % 3000 == 0 or fname_to_save == "model_best.pth":
                     # Set the save directory only when you need to save the model
-                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_4"
+                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_corrected"
                     os.makedirs(drive_save_dir, exist_ok=True)
 
                     # Now, decide which file to save
                     if fname_to_save == "model_best.pth":
                         drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
                     else:
-                        drive_save_path = os.path.join(drive_save_dir, f"model_latest_{iteration + 1}.pth")
+                        drive_save_path = os.path.join(drive_save_dir, f"model_latest.pth")
                     
                     # Save the model
                     torch.save(ckpt_save_dict, drive_save_path)
