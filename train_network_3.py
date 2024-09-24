@@ -21,8 +21,159 @@ from gaussian_renderer import render_predicted
 from scene.gaussian_predictor import GaussianSplatPredictor
 from datasets.dataset_factory import get_dataset
 
-def lol():
-  return None
+from torch.utils.data import Dataset
+
+import torch.optim.lr_scheduler as lr_scheduler
+
+
+class TargetReconstructionDataset(Dataset):
+    """
+    Dataset class for loading target reconstructions from folders.
+    Each folder contains one sample's reconstruction.
+    """
+    def __init__(self, root_dir):
+        self.root_dir = root_dir
+        self.folders = [folder for folder in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, folder))]
+
+    def __len__(self):
+        return len(self.folders)
+
+    def __getitem__(self, idx):
+        folder_name = self.folders[idx]
+        reconstruction_path = os.path.join(self.root_dir, folder_name, 'reconstruction.pt')
+        
+        if os.path.exists(reconstruction_path):
+            reconstruction_data = torch.load(reconstruction_path)
+        else:
+            print(f"Warning: No reconstruction.pt found in {folder_name}")
+            reconstruction_data = None  # Handle missing data if necessary
+
+        return folder_name, reconstruction_data
+
+def get_reconstruction_dataloader(target_dir, batch_size, num_workers=0):
+    """
+    Returns a DataLoader for loading target reconstructions in batches.
+    """
+    target_dataset = TargetReconstructionDataset(target_dir)
+    target_dataloader = DataLoader(target_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    return target_dataloader
+
+
+def normalize_channels_min_max(tensor):
+    """
+    Normalize each channel in the tensor individually based on min and max values.
+    Handles 2D, 3D, and 4D tensors.
+
+    :param tensor: Tensor of shape [B, C, H, W], [B, N, C], or [N, C]
+    :return: Normalized tensor
+    """
+    if tensor.dim() == 4:  # Case for [B, C, H, W] format
+        min_vals = tensor.amin(dim=[2, 3], keepdim=True)  # Min over H and W dimensions
+        max_vals = tensor.amax(dim=[2, 3], keepdim=True)  # Max over H and W dimensions
+    elif tensor.dim() == 3:  # Case for [B, N, C] format
+        min_vals = tensor.amin(dim=1, keepdim=True)  # Min over N dimension
+        max_vals = tensor.amax(dim=1, keepdim=True)  # Max over N dimension
+    elif tensor.dim() == 2:  # Case for [N, C] format
+        min_vals = tensor.amin(dim=0, keepdim=True)  # Min over N dimension
+        max_vals = tensor.amax(dim=0, keepdim=True)  # Max over N dimension
+    elif tensor.dim() == 5:  # Assuming the shape is [B, 1, N, 1, C] -> treat [N, C] as [H, W]
+        tensor = tensor.squeeze(1).squeeze(2)  # Remove singleton dimensions
+        min_vals = tensor.amin(dim=[1, 2], keepdim=True)
+        max_vals = tensor.amax(dim=[1, 2], keepdim=True)
+    else:
+        raise ValueError(f"Unsupported tensor shape: {tensor.shape}")
+
+    # Normalize each channel individually
+    normalized = (tensor - min_vals) / (max_vals - min_vals + 1e-8)
+    
+    return normalized
+
+
+    # Normalize each channel individually
+    normalized = (tensor - min_vals) / (max_vals - min_vals + 1e-8)
+    
+    return normalized
+
+
+def custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights):
+    total_loss = 0.0
+
+        # Ensure the shapes match by squeezing unnecessary dimensions
+    target_reconstructions['xyz'] = target_reconstructions['xyz'].squeeze(dim=1)
+    target_reconstructions['scaling'] = target_reconstructions['scaling'].squeeze(dim=1)
+    target_reconstructions['features_dc'] = target_reconstructions['features_dc'].squeeze(dim=1)
+    target_reconstructions['features_rest'] = target_reconstructions['features_rest'].squeeze(dim=1)
+    target_reconstructions['opacity'] = target_reconstructions['opacity'].squeeze(dim=1)
+    # Print shapes for debugging
+    # print(f"Shape of current_xyz: {gaussian_splats['xyz'].shape}")
+    # print(f"Shape of target_xyz: {target_reconstructions['xyz'].shape}")
+    # print(f"Shape of current_scaling: {gaussian_splats['scaling'].shape}")
+    # print(f"Shape of target_scaling: {target_reconstructions['scaling'].shape}")
+    # print(f"Shape of current_features_dc: {gaussian_splats['features_dc'].shape}")
+    # print(f"Shape of target_features_dc: {target_reconstructions['features_dc'].shape}")
+    # print(f"Shape of current_features_rest: {gaussian_splats['features_rest'].shape}")
+    # print(f"Shape of target_features_rest: {target_reconstructions['features_rest'].shape}")
+    # print(f"Shape of current_opacity: {gaussian_splats['opacity'].shape}")
+    # print(f"Shape of target_opacity: {target_reconstructions['opacity'].shape}")
+
+
+    # 'xyz' components comparison
+    if 'xyz' in target_reconstructions and 'xyz' in gaussian_splats:
+        target_xyz = normalize_channels_min_max(target_reconstructions['xyz'])  # Shape: [Batch_size, C, H, W]
+        current_xyz = normalize_channels_min_max(gaussian_splats['xyz'])  # Shape: [Batch_size, C, H, W]
+        target_opacity = target_reconstructions['opacity']  # Shape: [Batch_size, C, H, W]
+
+        # Batched difference and weighted sum over the entire batch
+        diff_xyz = current_xyz.sub(target_xyz).pow(2)  # Shape: [Batch_size, C, H, W]
+        weighted_diff_xyz = diff_xyz.mul(target_opacity)  # Shape: [Batch_size, C, H, W]
+        total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)
+
+    # 'scaling' components comparison
+    if 'scaling' in target_reconstructions and 'scaling' in gaussian_splats:
+        target_scaling = normalize_channels_min_max(target_reconstructions['scaling'])
+        current_scaling = normalize_channels_min_max(gaussian_splats['scaling'])
+        target_opacity = target_reconstructions['opacity']
+
+        diff_scaling = current_scaling.sub(target_scaling).pow(2)
+        weighted_diff_scaling = diff_scaling.mul(target_opacity)
+        total_loss += weights['scaling'] * torch.mean(weighted_diff_scaling)
+
+    # 'features_dc' components comparison
+    if 'features_dc' in target_reconstructions and 'features_dc' in gaussian_splats:
+        target_features_dc = normalize_channels_min_max(target_reconstructions['features_dc'])
+        current_features_dc = normalize_channels_min_max(gaussian_splats['features_dc'])
+        target_opacity = target_reconstructions['opacity']
+
+        diff_features_dc = current_features_dc.sub(target_features_dc).mean(dim=-1, keepdim=True).squeeze(-1).pow(2)
+        print(f"Shape of diff_features_dc: {diff_features_dc.shape}")
+
+        weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
+        total_loss += weights['features_dc'] * torch.mean(weighted_diff_features_dc)
+
+    # 'features_rest' components comparison
+    if 'features_rest' in target_reconstructions and 'features_rest' in gaussian_splats:
+        target_features_rest = normalize_channels_min_max(target_reconstructions['features_rest'])
+        current_features_rest = normalize_channels_min_max(gaussian_splats['features_rest'])
+        target_opacity = target_reconstructions['opacity']
+
+        # Batched difference, taking the mean over H and W dimensions
+        mean_features_rest = torch.mean(current_features_rest.sub(target_features_rest).pow(2), dim=[2, 3], keepdim=True).squeeze(-1)
+        # print(f"Shape of mean_features_rest: {mean_features_rest.shape}")
+
+        weighted_diff_features_rest = mean_features_rest.mul(target_opacity)
+        total_loss += weights['features_rest'] * torch.mean(weighted_diff_features_rest)
+
+    # 'opacity' components comparison
+    if 'opacity' in target_reconstructions and 'opacity' in gaussian_splats:
+        total_loss += weights['opacity'] * torch.nn.functional.mse_loss(
+            gaussian_splats['opacity'], target_reconstructions['opacity']
+        )
+
+    return total_loss
+
+
+
+
 @hydra.main(version_base=None, config_path='configs', config_name="default_config")
 def main(cfg: DictConfig):
 
@@ -59,15 +210,21 @@ def main(cfg: DictConfig):
     gaussian_predictor = GaussianSplatPredictor(cfg)
     gaussian_predictor = gaussian_predictor.to(memory_format=torch.channels_last)
 
+    # Define learnable lambda parameter
+    lambda_value = torch.tensor(0.01, requires_grad=True, device='cuda')  # Initial value for lambda
+
     l = []
+
     if cfg.model.network_with_offset:
         l.append({'params': gaussian_predictor.network_with_offset.parameters(), 
          'lr': cfg.opt.base_lr})
     if cfg.model.network_without_offset:
         l.append({'params': gaussian_predictor.network_wo_offset.parameters(), 
          'lr': cfg.opt.base_lr})
-    optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15, 
-                                 betas=cfg.opt.betas)
+    optimizer = torch.optim.Adam(l + [{'params': [lambda_value], 'lr': 1e-4}], eps=1e-15, betas=cfg.opt.betas)
+    # PSNR_novel and SWIM_novel ReduceLROnPlateau scheduler
+    psnr_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=100, min_lr=1e-6)
+    ssim_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=100, min_lr=1e-6)
 
     # Resuming training
     if fabric.is_global_zero:
@@ -158,11 +315,24 @@ def main(cfg: DictConfig):
     print("Beginning training")
     first_iter += 1
     iteration = first_iter
+    # load the reconstructions target.
+    target_dir = "/content/SI_target"
+    target_dataloader = get_reconstruction_dataloader(target_dir, batch_size=cfg.opt.batch_size)
+    target_iter = iter(target_dataloader)  # Create an iterator to loop over target batches
 
+
+        # Weights for each component in the custom loss function
+    weights = {
+        'xyz': 1.0,
+        'opacity': 1.0,
+        'scaling': 1.0,
+        'features_dc': 1.0,
+        'features_rest': 1.0
+    }
     for num_epoch in range((cfg.opt.iterations + 1 - first_iter)// len(dataloader) + 1):
         dataloader.sampler.set_epoch(num_epoch)        
 
-        for data in dataloader:
+        for data, target_batch in zip(dataloader, target_dataloader):
             iteration += 1
 
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
@@ -237,11 +407,22 @@ def main(cfg: DictConfig):
                     lpips_fn(rendered_images * 2 - 1, gt_images * 2 - 1),
                     )
 
-            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips
+            old_total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips
+
+                    # Process target reconstructions as a batch
+            target_names, target_reconstructions = target_batch
+            # Custom loss calculation using the function you provided
+            custom_loss = custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights)
+
+            # Total loss with AdaLFL
+            total_loss = old_total_loss + lambda_value * custom_loss 
+
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 
-            assert not total_loss.isnan(), "Found NaN loss!"
+            if torch.isnan(total_loss):
+              print(f"NaN loss encountered at iteration {iteration}, skipping this batch.")
+              continue
             print("finished forward {} on process {}".format(iteration, fabric.global_rank))
             fabric.backward(total_loss)
 
@@ -260,7 +441,7 @@ def main(cfg: DictConfig):
             # ========= Logging =============
             with torch.no_grad():
                 if iteration % cfg.logging.loss_log == 0 and fabric.is_global_zero:
-                    wandb.log({"training_loss": np.log10(total_loss.item() + 1e-8)}, step=iteration)
+                    wandb.log({"training_loss": total_loss.item(), "lambda_value": lambda_value.item()}, step=iteration)
                     if cfg.opt.lambda_lpips != 0:
                         wandb.log({"training_l12_loss": np.log10(l12_loss_sum.item() + 1e-8)}, step=iteration)
                         wandb.log({"training_lpips_loss": np.log10(lpips_loss_sum.item() + 1e-8)}, step=iteration)
@@ -350,6 +531,12 @@ def main(cfg: DictConfig):
                         val_dataloader, 
                         device=device,
                         model_cfg=cfg)
+
+                psnr_novel = scores['PSNR_novel']
+                ssim_novel = scores['SSIM_novel']
+                psnr_scheduler.step(psnr_novel)
+                ssim_scheduler.step(ssim_novel)
+
                 wandb.log(scores, step=iteration+1)
                 # save models - if the newest psnr is better than the best one,
                 # overwrite best_model. Always overwrite the latest model. 
@@ -374,16 +561,16 @@ def main(cfg: DictConfig):
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
                 # Check if it's time to save the model
-                if (iteration + 1) % 3000 == 0 or fname_to_save == "model_best.pth":
+                if (iteration + 1) % 1000 == 0 or fname_to_save == "model_best.pth":
                     # Set the save directory only when you need to save the model
-                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_4"
+                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_AdaLFL_scheduler"
                     os.makedirs(drive_save_dir, exist_ok=True)
 
                     # Now, decide which file to save
                     if fname_to_save == "model_best.pth":
                         drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
                     else:
-                        drive_save_path = os.path.join(drive_save_dir, f"model_latest_{iteration + 1}.pth")
+                        drive_save_path = os.path.join(drive_save_dir, f"model_latest.pth")
                     
                     # Save the model
                     torch.save(ckpt_save_dict, drive_save_path)

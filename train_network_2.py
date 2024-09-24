@@ -87,7 +87,6 @@ def custom_loss_fn_batched(target_reconstruction, gaussian_splats, weights):
     total_loss = 0.0
     
     # Process the entire batch at once, without looping through each sample
-    
     # 'xyz' components comparison
     if 'xyz' in target_reconstruction and 'xyz' in gaussian_splats:
         target_xyz = normalize_channels_min_max(target_reconstruction['xyz'])  # Shape: [Batch_size, C, H, W]
