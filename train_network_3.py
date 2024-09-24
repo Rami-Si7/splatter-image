@@ -145,7 +145,7 @@ def custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights):
         target_opacity = target_reconstructions['opacity']
 
         diff_features_dc = current_features_dc.sub(target_features_dc).mean(dim=-1, keepdim=True).squeeze(-1).pow(2)
-        print(f"Shape of diff_features_dc: {diff_features_dc.shape}")
+        # print(f"Shape of diff_features_dc: {diff_features_dc.shape}")
 
         weighted_diff_features_dc = diff_features_dc.mul(target_opacity)
         total_loss += weights['features_dc'] * torch.mean(weighted_diff_features_dc)
