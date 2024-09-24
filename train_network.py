@@ -238,6 +238,8 @@ def main(cfg: DictConfig):
                     )
 
             total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips
+            print(f'total_loss: {total_loss}')
+
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 

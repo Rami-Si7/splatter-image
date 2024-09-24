@@ -22,10 +22,6 @@ from scene.gaussian_predictor import GaussianSplatPredictor
 from datasets.dataset_factory import get_dataset
 
 from torch.utils.data import Dataset
-
-import torch.optim.lr_scheduler as lr_scheduler
-
-
 class TargetReconstructionDataset(Dataset):
     """
     Dataset class for loading target reconstructions from folders.
@@ -127,6 +123,15 @@ def custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights):
         diff_xyz = current_xyz.sub(target_xyz).pow(2)  # Shape: [Batch_size, C, H, W]
         weighted_diff_xyz = diff_xyz.mul(target_opacity)  # Shape: [Batch_size, C, H, W]
         total_loss += weights['xyz'] * torch.mean(weighted_diff_xyz)
+    if 'rotation' in target_reconstructions and 'rotation' in gaussian_splats:
+        target_rotation = normalize_channels_min_max(target_reconstructions['rotation'])  # Shape: [Batch_size, C, H, W]
+        current_rotation = normalize_channels_min_max(gaussian_splats['rotation'])  # Shape: [Batch_size, C, H, W]
+        target_opacity = target_reconstructions['opacity']  # Shape: [Batch_size, C, H, W]
+
+        # Batched difference and weighted sum over the entire batch
+        diff_rotation = current_rotation.sub(target_rotation).pow(2)  # Shape: [Batch_size, C, H, W]
+        weighted_diff_xyz = diff_xyz.mul(target_opacity)  # Shape: [Batch_size, C, H, W]
+        total_loss += weights['rotation'] * torch.mean(weighted_diff_xyz)
 
     # 'scaling' components comparison
     if 'scaling' in target_reconstructions and 'scaling' in gaussian_splats:
@@ -171,9 +176,6 @@ def custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights):
 
     return total_loss
 
-
-
-
 @hydra.main(version_base=None, config_path='configs', config_name="default_config")
 def main(cfg: DictConfig):
 
@@ -210,18 +212,15 @@ def main(cfg: DictConfig):
     gaussian_predictor = GaussianSplatPredictor(cfg)
     gaussian_predictor = gaussian_predictor.to(memory_format=torch.channels_last)
 
-
-
     l = []
-
     if cfg.model.network_with_offset:
         l.append({'params': gaussian_predictor.network_with_offset.parameters(), 
          'lr': cfg.opt.base_lr})
     if cfg.model.network_without_offset:
         l.append({'params': gaussian_predictor.network_wo_offset.parameters(), 
          'lr': cfg.opt.base_lr})
-    optimizer = torch.optim.Adam(l , eps=1e-15, betas=cfg.opt.betas)
-
+    optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15, 
+                                 betas=cfg.opt.betas)
 
     # Resuming training
     if fabric.is_global_zero:
@@ -312,7 +311,7 @@ def main(cfg: DictConfig):
     print("Beginning training")
     first_iter += 1
     iteration = first_iter
-    # load the reconstructions target.
+        # load the reconstructions target.
     target_dir = "/content/SI_target"
     target_dataloader = get_reconstruction_dataloader(target_dir, batch_size=cfg.opt.batch_size)
     target_iter = iter(target_dataloader)  # Create an iterator to loop over target batches
@@ -324,15 +323,18 @@ def main(cfg: DictConfig):
         'opacity': 1.0,
         'scaling': 1.0,
         'features_dc': 1.0,
-        'features_rest': 1.0
+        'features_rest': 1.0,
+        'rotation': 1.0
     }
     custom_lambda = 0.001
+
     for num_epoch in range((cfg.opt.iterations + 1 - first_iter)// len(dataloader) + 1):
         dataloader.sampler.set_epoch(num_epoch)        
 
         for data, target_batch in zip(dataloader, target_dataloader):
             iteration += 1
-
+            if iteration % 1000:
+              custom_lambda += 0.001
             print("starting iteration {} on process {}".format(iteration, fabric.global_rank))
 
             # =============== Prepare input ================
@@ -404,23 +406,16 @@ def main(cfg: DictConfig):
                 lpips_loss_sum = torch.mean(
                     lpips_fn(rendered_images * 2 - 1, gt_images * 2 - 1),
                     )
-
-            old_total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips
-
-                    # Process target reconstructions as a batch
             target_names, target_reconstructions = target_batch
             # Custom loss calculation using the function you provided
             custom_loss = custom_loss_fn_batched(target_reconstructions, gaussian_splats, weights)
 
-            # Total loss with AdaLFL
-            total_loss = old_total_loss + custom_lambda * custom_loss 
+            total_loss = l12_loss_sum * lambda_l12 + lpips_loss_sum * lambda_lpips + custom_lambda * custom_loss
 
             if cfg.data.category == "hydrants" or cfg.data.category == "teddybears":
                 total_loss = total_loss + big_gaussian_reg_loss + small_gaussian_reg_loss
 
-            if torch.isnan(total_loss):
-              print(f"NaN loss encountered at iteration {iteration}, skipping this batch.")
-              continue
+            assert not total_loss.isnan(), "Found NaN loss!"
             print("finished forward {} on process {}".format(iteration, fabric.global_rank))
             fabric.backward(total_loss)
 
@@ -439,7 +434,7 @@ def main(cfg: DictConfig):
             # ========= Logging =============
             with torch.no_grad():
                 if iteration % cfg.logging.loss_log == 0 and fabric.is_global_zero:
-                    wandb.log({"training_loss": np.log10(total_loss.item() + 1e-8), "lambda_value": lambda_value.item()}, step=iteration)
+                    wandb.log({"training_loss": np.log10(total_loss.item() + 1e-8)}, step=iteration)
                     if cfg.opt.lambda_lpips != 0:
                         wandb.log({"training_l12_loss": np.log10(l12_loss_sum.item() + 1e-8)}, step=iteration)
                         wandb.log({"training_lpips_loss": np.log10(lpips_loss_sum.item() + 1e-8)}, step=iteration)
@@ -529,7 +524,6 @@ def main(cfg: DictConfig):
                         val_dataloader, 
                         device=device,
                         model_cfg=cfg)
-
                 wandb.log(scores, step=iteration+1)
                 # save models - if the newest psnr is better than the best one,
                 # overwrite best_model. Always overwrite the latest model. 
@@ -554,16 +548,16 @@ def main(cfg: DictConfig):
                     ckpt_save_dict["model_state_dict"] = gaussian_predictor.state_dict() 
                 torch.save(ckpt_save_dict, os.path.join(vis_dir, fname_to_save))
                 # Check if it's time to save the model
-                if (iteration + 1) % 1000 == 0 or fname_to_save == "model_best.pth":
+                if (iteration + 1) % 3000 == 0 or fname_to_save == "model_best.pth":
                     # Set the save directory only when you need to save the model
-                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_AdaLFL_scheduler"
+                    drive_save_dir = "/content/drive/MyDrive/train_base_batch_4"
                     os.makedirs(drive_save_dir, exist_ok=True)
 
                     # Now, decide which file to save
                     if fname_to_save == "model_best.pth":
                         drive_save_path = os.path.join(drive_save_dir, "model_best.pth")
                     else:
-                        drive_save_path = os.path.join(drive_save_dir, f"model_latest.pth")
+                        drive_save_path = os.path.join(drive_save_dir, f"model_latest_{iteration + 1}.pth")
                     
                     # Save the model
                     torch.save(ckpt_save_dict, drive_save_path)
