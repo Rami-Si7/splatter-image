@@ -21,8 +21,6 @@ from gaussian_renderer import render_predicted
 from scene.gaussian_predictor import GaussianSplatPredictor
 from datasets.dataset_factory import get_dataset
 
-def lol():
-  return None
 @hydra.main(version_base=None, config_path='configs', config_name="default_config")
 def main(cfg: DictConfig):
 
